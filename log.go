@@ -3,6 +3,7 @@ package l
 import (
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -11,8 +12,10 @@ import (
 )
 
 var (
-	logger *zap.Logger
-	sugar  *zap.SugaredLogger
+	logger   *zap.Logger
+	sugar    *zap.SugaredLogger
+	initOnce sync.Once
+	initMu   sync.RWMutex
 )
 
 // 自定义时间编码器
@@ -130,8 +133,11 @@ func Setup(config Config) error {
 	)
 
 	// 创建logger，移除默认的字段分隔符
+	// 使用写锁保护，确保线程安全
+	initMu.Lock()
 	logger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
 	sugar = logger.Sugar()
+	initMu.Unlock()
 
 	return nil
 }
@@ -140,50 +146,105 @@ func Unsetup() error {
 	return nil
 }
 
+// ensureInitialized 确保 logger 和 sugar 已初始化
+// 如果未初始化，使用默认配置初始化
+// 使用 sync.Once 确保线程安全的一次性初始化
+// 如果 Setup() 已经初始化了 logger，则不会覆盖
+func ensureInitialized() {
+	// 快速路径：使用读锁检查是否已经初始化
+	initMu.RLock()
+	if sugar != nil {
+		initMu.RUnlock()
+		return
+	}
+	initMu.RUnlock()
+
+	// 慢速路径：使用 sync.Once 确保只初始化一次
+	initOnce.Do(func() {
+		// 再次检查，防止 Setup() 在检查后、初始化前设置了 logger
+		initMu.Lock()
+		defer initMu.Unlock()
+
+		if sugar != nil {
+			// Setup() 已经初始化了，不需要再初始化
+			return
+		}
+
+		// 使用默认配置初始化
+		encoderConfig := zap.NewDevelopmentEncoderConfig()
+		encoderConfig.EncodeTime = customTimeEncoder{}.EncodeTime
+		encoderConfig.EncodeLevel = customLevelEncoder{}.EncodeLevel
+		encoderConfig.EncodeDuration = zapcore.SecondsDurationEncoder
+		encoderConfig.EncodeCaller = customCallerEncoder{}.EncodeCaller
+		encoderConfig.ConsoleSeparator = " "
+
+		core := zapcore.NewCore(
+			zapcore.NewConsoleEncoder(encoderConfig),
+			zapcore.AddSync(os.Stdout),
+			zapcore.DebugLevel,
+		)
+
+		logger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+		sugar = logger.Sugar()
+	})
+}
+
 func Debug(args ...interface{}) {
+	ensureInitialized()
 	sugar.Debug(args...)
 }
 
 func Info(args ...interface{}) {
+	ensureInitialized()
 	sugar.Info(args...)
 }
 
 func Warn(args ...interface{}) {
+	ensureInitialized()
 	sugar.Warn(args...)
 }
 
 func Error(args ...interface{}) {
+	ensureInitialized()
 	sugar.Error(args...)
 }
 
 func Fatal(args ...interface{}) {
+	ensureInitialized()
 	sugar.Fatal(args...)
 }
 
 func Panic(args ...interface{}) {
+	ensureInitialized()
 	sugar.Panic(args...)
 }
 
 func Debugf(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Debugf(message, args...)
 }
 
 func Infof(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Infof(message, args...)
 }
 
 func Warnf(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Warnf(message, args...)
 }
 
 func Errorf(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Errorf(message, args...)
 }
 
 func Fatalf(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Fatalf(message, args...)
 }
 
 func Panicf(message string, args ...interface{}) {
+	ensureInitialized()
 	sugar.Panicf(message, args...)
 }
